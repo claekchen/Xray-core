@@ -17,12 +17,14 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
 
       - name: Restore Wintun Cache
         uses: actions/cache/restore@v5
         with:
           path: resources
           key: xray-wintun-
+          restore-keys: xray-wintun-
 
       - name: Check Assets Existence
         id: check-assets
@@ -224,6 +226,7 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
 
       - name: Restore Wintun Cache
         if: matrix.goos == 'windows'
@@ -231,6 +234,7 @@ jobs:
         with:
           path: resources
           key: xray-wintun-
+          restore-keys: xray-wintun-
 
       - name: Add additional assets into package
         run: |

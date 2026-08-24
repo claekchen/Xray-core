@@ -14,6 +14,7 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
       - name: Check Assets Existence
         id: check-assets
         run: |
@@ -72,6 +73,7 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
           enableCrossOsArchive: true
       - name: Test
         run: go test -timeout 1h -v ./...
