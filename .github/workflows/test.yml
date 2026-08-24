@@ -87,3 +87,6 @@ jobs:
           enableCrossOsArchive: true
       - name: Test
         run: go test -timeout 1h -v ./...
+      - name: Test Flow Accounting Report
+        if: runner.os == 'Linux'
+        run: python3 contrib/flow-accounting/test_xray_flow_report.py
