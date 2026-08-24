@@ -9,6 +9,8 @@ Set `XRAY_FLOW_LOG` to enable the feature:
 Environment=XRAY_FLOW_LOG=/var/log/xray/flow.jsonl
 ```
 
+Example deployment files for the systemd drop-in and daily log rotation are included in this directory. Pre-create the output file with ownership matching the Xray service user before restarting the service.
+
 The feature is disabled when the environment variable is unset or empty. The destination is captured after protocol sniffing and routing but before DNS resolution, so domain names remain available. Accounting is attached after inbound multiplexing has been split into logical flows; multiple destination sites sharing one transport connection are recorded separately.
 
 The output file is opened in append mode for each completed flow. This allows normal daily log rotation without signaling or restarting Xray. The service user must be able to create or append the configured file.

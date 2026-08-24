@@ -1,0 +1,11 @@
+/var/log/xray/flow.jsonl {
+    daily
+    rotate 30
+    maxage 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    create 0600 nobody nogroup
+}
