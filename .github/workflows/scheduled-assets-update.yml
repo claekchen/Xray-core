@@ -30,6 +30,7 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
 
       - name: Update Geodat
         id: update
@@ -74,6 +75,7 @@ jobs:
         with:
           path: resources
           key: xray-wintun-
+          restore-keys: xray-wintun-
 
       - name: Force downloading if run manually or on file update
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'

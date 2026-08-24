@@ -17,12 +17,14 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
 
       - name: Restore Wintun Cache
         uses: actions/cache/restore@v5
         with:
           path: resources
           key: xray-wintun-
+          restore-keys: xray-wintun-
 
       - name: Check Assets Existence
         id: check-assets
@@ -53,24 +55,28 @@ jobs:
             fi
           done
 
-      - name: Trigger Asset Update Workflow if Assets Missing
+      - name: Download Assets if Missing
         if: steps.check-assets.outputs.missing == 'true'
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            await github.rest.actions.createWorkflowDispatch({
-              owner,
-              repo,
-              workflow_id: 'scheduled-assets-update.yml',
-              ref: context.ref
-            });
-            console.log('Triggered scheduled-assets-update.yml due to missing assets on branch:', context.ref);
+        run: |
+          mkdir -p resources
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat -o resources/geoip.dat
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat -o resources/geosite.dat
+          curl -fsSL https://www.wintun.net/builds/wintun-0.14.1.zip -o wintun.zip
+          unzip -q -o wintun.zip -d resources
 
-      - name: Sleep for 90 seconds if Assets Missing
+      - name: Save Geodat Cache if Missing
         if: steps.check-assets.outputs.missing == 'true'
-        run: sleep 90
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-geodat-${{ github.sha }}-${{ github.run_id }}
+
+      - name: Save Wintun Cache if Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-wintun-${{ github.sha }}-${{ github.run_id }}
 
   build:
     needs: check-assets
@@ -224,6 +230,7 @@ jobs:
         with:
           path: resources
           key: xray-geodat-
+          restore-keys: xray-geodat-
 
       - name: Restore Wintun Cache
         if: matrix.goos == 'windows'
@@ -231,6 +238,7 @@ jobs:
         with:
           path: resources
           key: xray-wintun-
+          restore-keys: xray-wintun-
 
       - name: Add additional assets into package
         run: |
