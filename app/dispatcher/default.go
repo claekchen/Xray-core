@@ -507,7 +507,8 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 
 	ob.Tag = handler.Tag()
 	if flow != nil {
-		defer flow.record(flowSnapshotFromContext(ctx, ob, handler.Tag()))
+		flow.start(flowSnapshotFromContext(ctx, ob, handler.Tag()))
+		defer flow.finish()
 	}
 	if accessMessage := log.AccessMessageFromContext(ctx); accessMessage != nil {
 		if tag := handler.Tag(); tag != "" {

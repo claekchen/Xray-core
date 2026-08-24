@@ -42,8 +42,12 @@ def group_key(record, group_by):
         return (record.get("source_ip", ""),)
     if group_by == "site":
         return (record.get("site", ""),)
-    started = parse_time(record.get("started_at"))
+    started = record_start(record)
     return ((started.date().isoformat() if started else "unknown"),)
+
+
+def record_start(record):
+    return parse_time(record.get("interval_started_at") or record.get("started_at"))
 
 
 def key_names(group_by):
@@ -68,10 +72,11 @@ def load_records(patterns, since, until, source, site):
                 for line in stream:
                     try:
                         record = json.loads(line)
-                        started = parse_time(record.get("started_at"))
+                        started = record_start(record)
+                        ended = parse_time(record.get("ended_at")) or started
                     except (ValueError, TypeError, json.JSONDecodeError):
                         continue
-                    if started is None or started < since or (until and started >= until):
+                    if started is None or ended < since or (until and started >= until):
                         continue
                     if not matches_source(record.get("source_ip", ""), source):
                         continue
@@ -87,11 +92,17 @@ def aggregate(records, group_by):
         "downlink_bytes": 0,
         "first_seen": None,
         "last_seen": None,
+        "flow_ids": set(),
+        "legacy_requests": 0,
     })
     for record in records:
         key = group_key(record, group_by)
         item = grouped[key]
-        item["requests"] += 1
+        flow_id = record.get("flow_id")
+        if flow_id:
+            item["flow_ids"].add(flow_id)
+        else:
+            item["legacy_requests"] += 1
         item["uplink_bytes"] += int(record.get("uplink_bytes", 0))
         item["downlink_bytes"] += int(record.get("downlink_bytes", 0))
         started = record.get("started_at")
@@ -104,6 +115,9 @@ def aggregate(records, group_by):
     rows = []
     for key, item in grouped.items():
         row = dict(zip(names, key))
+        item["requests"] = item["legacy_requests"] + len(item["flow_ids"])
+        del item["flow_ids"]
+        del item["legacy_requests"]
         row.update(item)
         row["total_bytes"] = item["uplink_bytes"] + item["downlink_bytes"]
         rows.append(row)

@@ -3,8 +3,10 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,12 +16,32 @@ import (
 	"github.com/xtls/xray-core/common/session"
 )
 
-const flowLogEnvironment = "XRAY_FLOW_LOG"
+const (
+	flowLogEnvironment              = "XRAY_FLOW_LOG"
+	flowSnapshotIntervalEnvironment = "XRAY_FLOW_SNAPSHOT_INTERVAL"
+	defaultFlowSnapshotInterval     = 5 * time.Minute
+)
+
+var (
+	flowProcessID = time.Now().UTC().UnixNano()
+	flowSequence  atomic.Uint64
+)
 
 type flowAccounting struct {
-	startedAt time.Time
-	uplink    atomic.Int64
-	downlink  atomic.Int64
+	startedAt       time.Time
+	intervalStarted time.Time
+	flowID          string
+	uplink          atomic.Int64
+	downlink        atomic.Int64
+	lastUplink      int64
+	lastDownlink    int64
+	segment         uint64
+	snapshot        flowSnapshot
+	done            chan struct{}
+	startOnce       sync.Once
+	finishOnce      sync.Once
+	mu              sync.Mutex
+	finished        bool
 }
 
 type flowAccountingWriter struct {
@@ -43,7 +65,11 @@ type flowSnapshot struct {
 }
 
 type flowRecord struct {
+	FlowID         string    `json:"flow_id"`
+	Segment        uint64    `json:"segment"`
+	Final          bool      `json:"final"`
 	StartedAt     time.Time `json:"started_at"`
+	IntervalStartedAt time.Time `json:"interval_started_at"`
 	EndedAt       time.Time `json:"ended_at"`
 	DurationMS    int64     `json:"duration_ms"`
 	SourceIP      string    `json:"source_ip"`
@@ -66,7 +92,27 @@ func newFlowAccounting() *flowAccounting {
 	if strings.TrimSpace(os.Getenv(flowLogEnvironment)) == "" {
 		return nil
 	}
-	return &flowAccounting{startedAt: time.Now().UTC()}
+	startedAt := time.Now().UTC()
+	sequence := flowSequence.Add(1)
+	return &flowAccounting{
+		startedAt:       startedAt,
+		intervalStarted: startedAt,
+		flowID:          fmt.Sprintf("%d-%d", flowProcessID, sequence),
+		done:            make(chan struct{}),
+	}
+}
+
+func flowSnapshotInterval() time.Duration {
+	value := strings.TrimSpace(os.Getenv(flowSnapshotIntervalEnvironment))
+	if value == "" {
+		return defaultFlowSnapshotInterval
+	}
+	interval, err := time.ParseDuration(value)
+	if err != nil || interval <= 0 {
+		errors.LogWarning(context.Background(), "invalid flow snapshot interval, using default: ", value)
+		return defaultFlowSnapshotInterval
+	}
+	return interval
 }
 
 func (f *flowAccounting) wrapUplink(writer buf.Writer) buf.Writer {
@@ -122,43 +168,104 @@ func flowSnapshotFromContext(ctx context.Context, outbound *session.Outbound, ou
 	return snapshot
 }
 
-func (f *flowAccounting) record(snapshot flowSnapshot) {
-	endedAt := time.Now().UTC()
-	record := flowRecord{
-		StartedAt:     f.startedAt,
-		EndedAt:       endedAt,
-		DurationMS:    endedAt.Sub(f.startedAt).Milliseconds(),
-		SourceIP:      snapshot.SourceIP,
-		SourcePort:    snapshot.SourcePort,
-		InboundTag:    snapshot.InboundTag,
-		User:          snapshot.User,
-		Network:       snapshot.Network,
-		Site:          snapshot.Site,
-		TargetPort:    snapshot.TargetPort,
-		OriginalSite:  snapshot.OriginalSite,
-		OriginalPort:  snapshot.OriginalPort,
-		RouteTarget:   snapshot.RouteTarget,
-		OutboundTag:   snapshot.OutboundTag,
-		Protocol:      snapshot.Protocol,
-		UplinkBytes:   f.uplink.Load(),
-		DownlinkBytes: f.downlink.Load(),
+func (f *flowAccounting) start(snapshot flowSnapshot) {
+	f.startOnce.Do(func() {
+		f.mu.Lock()
+		f.snapshot = snapshot
+		f.mu.Unlock()
+		go f.runSnapshots(flowSnapshotInterval())
+	})
+}
+
+func (f *flowAccounting) runSnapshots(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			f.recordSegment(false)
+		case <-f.done:
+			return
+		}
 	}
+}
+
+func (f *flowAccounting) finish() {
+	f.finishOnce.Do(func() {
+		close(f.done)
+		f.recordSegment(true)
+	})
+}
+
+func (f *flowAccounting) recordSegment(final bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.finished {
+		return
+	}
+	endedAt := time.Now().UTC()
+	uplink := f.uplink.Load()
+	downlink := f.downlink.Load()
+	uplinkDelta := uplink - f.lastUplink
+	downlinkDelta := downlink - f.lastDownlink
+	if !final && uplinkDelta == 0 && downlinkDelta == 0 {
+		return
+	}
+	record := flowRecord{
+		FlowID:         f.flowID,
+		Segment:        f.segment,
+		Final:          final,
+		StartedAt:     f.startedAt,
+		IntervalStartedAt: f.intervalStarted,
+		EndedAt:       endedAt,
+		DurationMS:    endedAt.Sub(f.intervalStarted).Milliseconds(),
+		SourceIP:      f.snapshot.SourceIP,
+		SourcePort:    f.snapshot.SourcePort,
+		InboundTag:    f.snapshot.InboundTag,
+		User:          f.snapshot.User,
+		Network:       f.snapshot.Network,
+		Site:          f.snapshot.Site,
+		TargetPort:    f.snapshot.TargetPort,
+		OriginalSite:  f.snapshot.OriginalSite,
+		OriginalPort:  f.snapshot.OriginalPort,
+		RouteTarget:   f.snapshot.RouteTarget,
+		OutboundTag:   f.snapshot.OutboundTag,
+		Protocol:      f.snapshot.Protocol,
+		UplinkBytes:   uplinkDelta,
+		DownlinkBytes: downlinkDelta,
+	}
+	if writeFlowRecord(record) {
+		f.lastUplink = uplink
+		f.lastDownlink = downlink
+		f.intervalStarted = endedAt
+		f.segment++
+	}
+	if final {
+		f.finished = true
+	}
+}
+
+func writeFlowRecord(record flowRecord) bool {
 	data, err := json.Marshal(record)
 	if err != nil {
 		errors.LogWarning(context.Background(), "failed to encode flow accounting record: ", err)
-		return
+		return false
 	}
 	path := strings.TrimSpace(os.Getenv(flowLogEnvironment))
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		errors.LogWarning(context.Background(), "failed to open flow accounting log: ", err)
-		return
+		return false
 	}
 	data = append(data, '\n')
+	success := true
 	if _, err := file.Write(data); err != nil {
 		errors.LogWarning(context.Background(), "failed to write flow accounting record: ", err)
+		success = false
 	}
 	if err := file.Close(); err != nil {
 		errors.LogWarning(context.Background(), "failed to close flow accounting log: ", err)
+		success = false
 	}
+	return success
 }

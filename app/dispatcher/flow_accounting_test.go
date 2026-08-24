@@ -17,6 +17,7 @@ import (
 func TestFlowAccountingRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flow.jsonl")
 	t.Setenv(flowLogEnvironment, path)
+	t.Setenv(flowSnapshotIntervalEnvironment, "1h")
 	flow := newFlowAccounting()
 
 	uplink := buf.New()
@@ -41,28 +42,52 @@ func TestFlowAccountingRecord(t *testing.T) {
 		Target:         net.TCPDestination(net.ParseAddress("example.com"), 443),
 		Tag:            "direct",
 	}
-	flow.record(flowSnapshotFromContext(ctx, outbound, outbound.Tag))
+	flow.start(flowSnapshotFromContext(ctx, outbound, outbound.Tag))
+	flow.recordSegment(false)
+
+	moreUplink := buf.New()
+	moreUplink.WriteString("more")
+	if err := flow.wrapUplink(buf.Discard).WriteMultiBuffer(buf.MultiBuffer{moreUplink}); err != nil {
+		t.Fatal(err)
+	}
+	moreDownlink := buf.New()
+	moreDownlink.WriteString("ok")
+	if err := flow.wrapDownlink(buf.Discard).WriteMultiBuffer(buf.MultiBuffer{moreDownlink}); err != nil {
+		t.Fatal(err)
+	}
+	flow.finish()
 
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	var record flowRecord
-	if err := json.NewDecoder(bufio.NewReader(file)).Decode(&record); err != nil {
+	decoder := json.NewDecoder(bufio.NewReader(file))
+	var checkpoint flowRecord
+	if err := decoder.Decode(&checkpoint); err != nil {
 		t.Fatal(err)
 	}
-	if record.SourceIP != "192.0.2.10" || record.SourcePort != 54321 {
-		t.Fatalf("unexpected source: %s:%d", record.SourceIP, record.SourcePort)
+	var final flowRecord
+	if err := decoder.Decode(&final); err != nil {
+		t.Fatal(err)
 	}
-	if record.Site != "example.com" || record.TargetPort != 443 {
-		t.Fatalf("unexpected target: %s:%d", record.Site, record.TargetPort)
+	if checkpoint.SourceIP != "192.0.2.10" || checkpoint.SourcePort != 54321 {
+		t.Fatalf("unexpected source: %s:%d", checkpoint.SourceIP, checkpoint.SourcePort)
 	}
-	if record.UplinkBytes != 7 || record.DownlinkBytes != 13 {
-		t.Fatalf("unexpected byte counts: up=%d down=%d", record.UplinkBytes, record.DownlinkBytes)
+	if checkpoint.Site != "example.com" || checkpoint.TargetPort != 443 {
+		t.Fatalf("unexpected target: %s:%d", checkpoint.Site, checkpoint.TargetPort)
 	}
-	if record.InboundTag != "vless-in" || record.OutboundTag != "direct" || record.Protocol != "tls" {
-		t.Fatalf("unexpected routing metadata: %+v", record)
+	if checkpoint.UplinkBytes != 7 || checkpoint.DownlinkBytes != 13 || checkpoint.Final || checkpoint.Segment != 0 {
+		t.Fatalf("unexpected checkpoint: %+v", checkpoint)
+	}
+	if final.UplinkBytes != 4 || final.DownlinkBytes != 2 || !final.Final || final.Segment != 1 {
+		t.Fatalf("unexpected final segment: %+v", final)
+	}
+	if checkpoint.FlowID == "" || checkpoint.FlowID != final.FlowID {
+		t.Fatalf("unexpected flow IDs: %q and %q", checkpoint.FlowID, final.FlowID)
+	}
+	if checkpoint.InboundTag != "vless-in" || checkpoint.OutboundTag != "direct" || checkpoint.Protocol != "tls" {
+		t.Fatalf("unexpected routing metadata: %+v", checkpoint)
 	}
 }
 
