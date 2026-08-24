@@ -55,9 +55,28 @@ jobs:
             fi
           done
 
-      - name: Sleep for 90 seconds if Assets Missing
+      - name: Download Assets if Missing
         if: steps.check-assets.outputs.missing == 'true'
-        run: sleep 90
+        run: |
+          mkdir -p resources
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat -o resources/geoip.dat
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat -o resources/geosite.dat
+          curl -fsSL https://www.wintun.net/builds/wintun-0.14.1.zip -o wintun.zip
+          unzip -q -o wintun.zip -d resources
+
+      - name: Save Geodat Cache if Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-geodat-${{ github.sha }}-${{ github.run_id }}
+
+      - name: Save Wintun Cache if Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-wintun-${{ github.sha }}-${{ github.run_id }}
 
   build:
     needs: check-assets

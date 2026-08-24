@@ -31,9 +31,19 @@ jobs:
               break
             fi
           done
-      - name: Sleep for 90 seconds if Assets Missing
+      - name: Download Geodat if Missing
         if: steps.check-assets.outputs.missing == 'true'
-        run: sleep 90
+        run: |
+          mkdir -p resources
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat -o resources/geoip.dat
+          curl -fsSL https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat -o resources/geosite.dat
+
+      - name: Save Geodat Cache if Missing
+        if: steps.check-assets.outputs.missing == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-geodat-${{ github.sha }}-${{ github.run_id }}
 
   check-proto:
     runs-on: ubuntu-latest
